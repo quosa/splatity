@@ -10,7 +10,7 @@
 // spherical harmonics that are only there for speed and view-dependent colour.
 
 import type { Camera } from './camera';
-import { quatToMat3 } from './math';
+import { quatToMat3, type Quat } from './math';
 import type { Splat } from './scene';
 
 /** Gaussians contributing less than this to a pixel are skipped. */
@@ -23,6 +23,8 @@ const MIN_TRANSMITTANCE = 1e-4;
 const NEAR = 0.2;
 /** Blur (pixels², added to the 2D variance) so no splat is thinner than a pixel. */
 const LOW_PASS = 0.3;
+/** Number of depth slices used by the sort. */
+const DEPTH_BUCKETS = 65536;
 
 /** Splats packed into flat arrays, with the 3D covariance worked out up front. */
 export interface SplatBuffer {
@@ -37,38 +39,47 @@ export interface SplatBuffer {
 }
 
 /**
- * Step 0, done once: turn each splat's scale + rotation into a covariance
- * matrix. With S = diag(scale) and R the rotation matrix,
+ * Step 0, done once: turn a splat's scale + rotation into a covariance matrix.
+ * With S = diag(scale) and R the rotation matrix,
  *
  *     Σ = R · S · Sᵀ · Rᵀ
  *
  * Σ describes the ellipsoid: how far the gaussian spreads in every direction.
+ * Writes the six unique values (xx, xy, xz, yy, yz, zz) to out[offset..].
  */
-export function buildSplatBuffer(splats: Splat[]): SplatBuffer {
-  const count = splats.length;
-  const buffer: SplatBuffer = {
+export function writeCovariance(
+  scale: ArrayLike<number>,
+  rotation: Quat,
+  out: Float32Array,
+  offset: number,
+): void {
+  const r = quatToMat3(rotation);
+  // M = R · S  (scale each column of R), so that Σ = M · Mᵀ.
+  const m0 = r[0] * scale[0], m1 = r[1] * scale[1], m2 = r[2] * scale[2];
+  const m3 = r[3] * scale[0], m4 = r[4] * scale[1], m5 = r[5] * scale[2];
+  const m6 = r[6] * scale[0], m7 = r[7] * scale[1], m8 = r[8] * scale[2];
+  out[offset] = m0 * m0 + m1 * m1 + m2 * m2; // xx
+  out[offset + 1] = m0 * m3 + m1 * m4 + m2 * m5; // xy
+  out[offset + 2] = m0 * m6 + m1 * m7 + m2 * m8; // xz
+  out[offset + 3] = m3 * m3 + m4 * m4 + m5 * m5; // yy
+  out[offset + 4] = m3 * m6 + m4 * m7 + m5 * m8; // yz
+  out[offset + 5] = m6 * m6 + m7 * m7 + m8 * m8; // zz
+}
+
+export function createSplatBuffer(count: number): SplatBuffer {
+  return {
     count,
     positions: new Float32Array(count * 3),
     covariances: new Float32Array(count * 6),
     colors: new Float32Array(count * 3),
     opacities: new Float32Array(count),
   };
+}
+
+export function buildSplatBuffer(splats: Splat[]): SplatBuffer {
+  const buffer = createSplatBuffer(splats.length);
   splats.forEach((s, i) => {
-    const r = quatToMat3(s.rotation);
-    // M = R · S  (scale each column of R), so that Σ = M · Mᵀ.
-    const m = [
-      r[0] * s.scale[0], r[1] * s.scale[1], r[2] * s.scale[2],
-      r[3] * s.scale[0], r[4] * s.scale[1], r[5] * s.scale[2],
-      r[6] * s.scale[0], r[7] * s.scale[1], r[8] * s.scale[2],
-    ];
-    buffer.covariances.set([
-      m[0] * m[0] + m[1] * m[1] + m[2] * m[2], // xx
-      m[0] * m[3] + m[1] * m[4] + m[2] * m[5], // xy
-      m[0] * m[6] + m[1] * m[7] + m[2] * m[8], // xz
-      m[3] * m[3] + m[4] * m[4] + m[5] * m[5], // yy
-      m[3] * m[6] + m[4] * m[7] + m[5] * m[8], // yz
-      m[6] * m[6] + m[7] * m[7] + m[8] * m[8], // zz
-    ], i * 6);
+    writeCovariance(s.scale, s.rotation, buffer.covariances, i * 6);
     buffer.positions.set(s.position, i * 3);
     buffer.colors.set(s.color, i * 3);
     buffer.opacities[i] = s.opacity;
@@ -81,6 +92,8 @@ export interface RenderOptions {
   splatScale?: number;
   /** Linear RGB shown where no splat covers a pixel. */
   background?: [number, number, number];
+  /** Only draw the first this-many splats of the buffer (a quick preview). */
+  maxSplats?: number;
 }
 
 export interface RenderStats {
@@ -105,6 +118,8 @@ export class Renderer {
   private conic = new Float32Array(0);
   private radius = new Float32Array(0);
   private order = new Uint32Array(0);
+  private unsorted = new Uint32Array(0);
+  private readonly buckets = new Uint32Array(DEPTH_BUCKETS + 1);
 
   constructor(width: number, height: number) {
     this.width = width;
@@ -122,6 +137,7 @@ export class Renderer {
     this.conic = new Float32Array(count * 3);
     this.radius = new Float32Array(count);
     this.order = new Uint32Array(count);
+    this.unsorted = new Uint32Array(count);
   }
 
   /** Renders the splats into `out`, an RGBA byte array of width * height pixels. */
@@ -134,10 +150,11 @@ export class Renderer {
     const { width, height } = this;
     const sizeSq = (options.splatScale ?? 1) ** 2;
     const background = options.background ?? [0, 0, 0];
-    this.reserve(splats.count);
+    const count = Math.min(splats.count, options.maxSplats ?? splats.count);
+    this.reserve(count);
 
     const { positions, covariances, colors, opacities } = splats;
-    const { screenX, screenY, depth, conic, radius, order } = this;
+    const { screenX, screenY, depth, conic, radius, order, unsorted } = this;
     const [camX, camY, camZ] = camera.position;
     const [rx, ry, rz] = camera.right;
     const [ux, uy, uz] = camera.up;
@@ -147,7 +164,10 @@ export class Renderer {
 
     // ---- 1. PROJECT -------------------------------------------------------
     let visible = 0;
-    for (let i = 0; i < splats.count; i++) {
+    let nearest = Infinity;
+    let farthest = 0;
+    for (let i = 0; i < count; i++) {
+      if (opacities[i] < MIN_ALPHA) continue; // invisible anyway
       // Centre in camera space: x right, y up, z = distance in front of camera.
       const dx = positions[i * 3] - camX;
       const dy = positions[i * 3 + 1] - camY;
@@ -204,14 +224,32 @@ export class Renderer {
       conic[i * 3 + 1] = -b / det;
       conic[i * 3 + 2] = a / det;
       radius[i] = rad;
-      order[visible++] = i;
+      unsorted[visible++] = i;
+      if (z < nearest) nearest = z;
+      if (z > farthest) farthest = z;
     }
 
     // ---- 2. SORT ----------------------------------------------------------
     // Nearest first. Unlike triangles with a z-buffer, blending transparent
     // things only gives the right picture if it happens in depth order.
-    const sorted = order.subarray(0, visible);
-    sorted.sort((p, q) => depth[p] - depth[q]);
+    //
+    // A counting sort: chop the depth range into many thin slices ("buckets"),
+    // count the splats in each, and from the counts work out where each
+    // bucket starts in the output. Much faster than a comparison sort for
+    // hundreds of thousands of splats; splats sharing a slice stay unordered,
+    // which is invisible with slices this thin.
+    const buckets = this.buckets;
+    buckets.fill(0);
+    const toBucket = (DEPTH_BUCKETS - 1) / Math.max(farthest - nearest, 1e-6);
+    for (let n = 0; n < visible; n++) {
+      buckets[(((depth[unsorted[n]] - nearest) * toBucket) | 0) + 1]++;
+    }
+    for (let k = 1; k <= DEPTH_BUCKETS; k++) buckets[k] += buckets[k - 1];
+    for (let n = 0; n < visible; n++) {
+      const i = unsorted[n];
+      order[buckets[((depth[i] - nearest) * toBucket) | 0]++] = i;
+    }
+    const sorted = order;
 
     // ---- 3. BLEND ---------------------------------------------------------
     const pixels = this.color;

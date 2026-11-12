@@ -21,6 +21,11 @@
       #stats { color: #9aa3b5; font-variant-numeric: tabular-nums; }
       #hud label { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
       #hud input { flex: 1; min-width: 0; }
+      #hud .open span {
+        padding: 4px 10px; border: 1px solid #4a5268; border-radius: 6px; cursor: pointer;
+      }
+      #hud .open span:hover { background: #262b3a; }
+      #hud .open small { color: #9aa3b5; }
       #hint { margin-top: 6px; color: #9aa3b5; }
     </style>
   </head>
@@ -32,6 +37,10 @@
       <label>
         Splat size
         <input id="size" type="range" min="0.02" max="1.5" step="0.01" value="1" />
+      </label>
+      <label class="open">
+        <input id="file" type="file" accept=".splat" hidden />
+        <span>Open a .splat file…</span> <small>or drop one anywhere</small>
       </label>
       <div id="hint">Drag to orbit · scroll or pinch to zoom · shrink the splats to see the points</div>
     </div>
