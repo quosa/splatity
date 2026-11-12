@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { orbitCamera } from '../src/camera';
+import { directionFromAngles, orbitCamera, roll, turn, type Orbit } from '../src/camera';
+import { frameScene, parseSplat } from '../src/loader';
 import { quatBetween, quatFromAxisAngle, quatToMat3, rotate } from '../src/math';
 import { buildSplatBuffer, Renderer } from '../src/renderer';
 import type { Splat } from '../src/scene';
@@ -7,7 +8,14 @@ import type { Splat } from '../src/scene';
 const SIZE = 101;
 const CENTRE = 50;
 // Camera at (0, 0, 5) looking down -Z at the origin.
-const camera = orbitCamera({ target: [0, 0, 0], yaw: 0, pitch: 0, distance: 5, fovY: Math.PI / 2 });
+const orbit = (): Orbit => ({
+  target: [0, 0, 0],
+  up: [0, 1, 0],
+  direction: directionFromAngles(0, 0),
+  distance: 5,
+  fovY: Math.PI / 2,
+});
+const camera = orbitCamera(orbit());
 const FOCAL = SIZE / 2; // tan(45°) = 1
 
 function draw(splats: Splat[]) {
@@ -88,5 +96,97 @@ describe('renderer', () => {
   it('culls splats behind the camera', () => {
     expect(draw([splat({ position: [0, 0, 6] })]).stats.drawn).toBe(0);
     expect(draw([splat({})]).stats.drawn).toBe(1);
+  });
+});
+
+describe('camera', () => {
+  it('looks at the target with an orthonormal basis', () => {
+    expect(camera.position).toEqual([0, 0, 5]);
+    expect(camera.forward).toEqual([-0, -0, -1]);
+    expect(camera.right[0]).toBeCloseTo(1);
+    expect(camera.up[1]).toBeCloseTo(1);
+  });
+
+  it('turns around the up axis and lifts towards it', () => {
+    const o = orbit();
+    turn(o, Math.PI / 2, 0);
+    expect(o.direction[0]).toBeCloseTo(1);
+    expect(o.direction[2]).toBeCloseTo(0);
+    turn(o, 0, 0.5);
+    expect(Math.asin(o.direction[1])).toBeCloseTo(0.5);
+    turn(o, 0, 10); // clamped short of straight overhead
+    expect(Math.asin(o.direction[1])).toBeCloseTo(1.5);
+  });
+
+  it('rolls the up axis around the viewing direction', () => {
+    const o = orbit();
+    roll(o, Math.PI / 2);
+    expect(Math.abs(o.up[0])).toBeCloseTo(1);
+    expect(o.up[1]).toBeCloseTo(0);
+    expect(o.direction).toEqual(directionFromAngles(0, 0));
+  });
+});
+
+describe('.splat loader', () => {
+  /** One 32-byte record. */
+  function record(position: number[], scale: number[], rgba: number[], wxyz: number[]): Uint8Array {
+    const bytes = new Uint8Array(32);
+    new Float32Array(bytes.buffer, 0, 6).set([...position, ...scale]);
+    bytes.set(rgba, 24);
+    bytes.set(wxyz.map((v) => v * 128 + 128), 28);
+    return bytes;
+  }
+
+  it('decodes records and turns the scene the right way up', () => {
+    const file = new Uint8Array(64);
+    file.set(record([1, 2, 3], [0.5, 0.1, 0.1], [255, 0, 51, 255], [0.99, 0, 0, 0]), 0);
+    file.set(record([-1, -2, -3], [0.1, 0.1, 0.1], [0, 255, 0, 128], [0.99, 0, 0, 0]), 32);
+    const s = parseSplat(file.buffer);
+    expect(s.count).toBe(2);
+    expect([...s.positions.subarray(0, 3)]).toEqual([1, -2, -3]);
+    expect(s.colors[0]).toBe(1);
+    expect(s.colors[2]).toBeCloseTo(0.2);
+    expect(s.opacities[1]).toBeCloseTo(0.5, 2);
+    // Long axis stays along x after the half turn around x; variance = scale².
+    expect(s.covariances[0]).toBeCloseTo(0.25);
+    expect(s.covariances[3]).toBeCloseTo(0.01);
+    expect(s.covariances[5]).toBeCloseTo(0.01);
+  });
+
+  it('flips a tilted splat consistently with its position', () => {
+    // Long axis rotated 90° around z, so it points along the file's +y ...
+    const h = Math.SQRT1_2 * 0.99;
+    const s = parseSplat(record([0, 0, 0], [0.5, 0.1, 0.1], [255, 255, 255, 255], [h, 0, 0, h]).slice().buffer);
+    // ... which is still the y axis (now pointing the other way) after loading.
+    expect(s.covariances[0]).toBeCloseTo(0.01, 3);
+    expect(s.covariances[3]).toBeCloseTo(0.25, 2);
+  });
+
+  it('frames the bulk of a scene, ignoring stray floaters', () => {
+    const line = Array.from({ length: 101 }, (_, i) => splat({ position: [i * 0.1, 2, 0] }));
+    line.push(splat({ position: [5000, 2, 0] }));
+    const { centre, radius } = frameScene(buildSplatBuffer(line));
+    expect(centre[0]).toBeCloseTo(5, 0);
+    expect(centre[1]).toBeCloseTo(2);
+    expect(radius).toBeCloseTo(4.5, 0);
+  });
+
+  it('rejects files that are too small', () => {
+    expect(() => parseSplat(new ArrayBuffer(10))).toThrow();
+  });
+});
+
+describe('renderer options', () => {
+  it('draws only the first maxSplats, and sorts many splats by depth', () => {
+    const many = Array.from({ length: 200 }, (_, i) =>
+      splat({ position: [0, 0, -4 + i * 0.03], color: [i === 199 ? 1 : 0, 0, 0], opacity: 0.9 }));
+    const out = new Uint8ClampedArray(SIZE * SIZE * 4);
+    const renderer = new Renderer(SIZE, SIZE);
+    const buffer = buildSplatBuffer(many);
+    // The last splat is the nearest and red: it must end up on top.
+    renderer.render(buffer, camera, out);
+    expect(out[(CENTRE * SIZE + CENTRE) * 4]).toBeGreaterThan(220);
+    expect(renderer.render(buffer, camera, out, { maxSplats: 50 }).drawn).toBe(50);
+    expect(out[(CENTRE * SIZE + CENTRE) * 4]).toBe(0);
   });
 });

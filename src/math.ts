@@ -67,3 +67,16 @@ export function rotate(q: Quat, v: Vec3): Vec3 {
     m[6] * v[0] + m[7] * v[1] + m[8] * v[2],
   ];
 }
+
+/** Rotates `v` by `angle` radians around the unit vector `axis` (Rodrigues' formula). */
+export function rotateAround(v: Vec3, axis: Vec3, angle: number): Vec3 {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const k = cross(axis, v);
+  const d = dot(axis, v) * (1 - c);
+  return [
+    v[0] * c + k[0] * s + axis[0] * d,
+    v[1] * c + k[1] * s + axis[1] * d,
+    v[2] * c + k[2] * s + axis[2] * d,
+  ];
+}
