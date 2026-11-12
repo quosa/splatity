@@ -90,6 +90,42 @@ Captures are rarely level, because nothing in the photos says which way is up.
 Shift-drag (or twist with two fingers) to tilt the turntable axis until the
 scene sits straight.
 
+## Training: where the gaussians come from
+
+The second page, `trainer.html` (linked from the viewer), shows how a splat
+scene is made, with the 3D taken out: it fits a few hundred 2D gaussians to a
+single picture. Drop any picture on it, or watch it learn a render of the
+built-in scene.
+
+![The 2D trainer part way through fitting the built-in scene](./doc/img/trainer.png)
+
+Everything is in `src/fit2d.ts`. Each gaussian is nine numbers (position, two
+sizes, an angle, a colour and an opacity), and one iteration is:
+
+1. **Render** the gaussians, with the same front-to-back blending as the 3D
+   renderer.
+2. **Compare** with the picture. The mean squared difference is the *loss*:
+   one number saying how wrong the render is.
+3. **Blame.** For each of the nine numbers of every gaussian, work out
+   whether increasing it would raise or lower the loss, and by how much. This
+   is the render loop run backwards with the chain rule, written out by hand.
+4. **Nudge** every number a small step in the direction that lowers the loss
+   (with Adam, the optimiser nearly all splat training uses).
+5. **Densify**, every 100 iterations. Gradient descent can move and reshape
+   gaussians but not create them, so the ones whose position is being pulled
+   hardest are cloned if small or split in two if large, and the ones that
+   have faded away are deleted. Each round shows as a dip in the curve under
+   the pictures: the new gaussians disturb the image for a moment, then it
+   ends up better than before.
+
+Real 3D training is this loop with two changes: step 1 is the 3D renderer,
+and step 2 compares against a different photograph each iteration, rendered
+from that photograph's camera position. Finding those camera positions is a
+separate step done beforehand (usually with COLMAP).
+
+A unit test checks the hand-written gradients against the slow, obvious
+method: nudge one number, re-render, and see how much the loss changed.
+
 ## How it is rendered
 
 Everything is in `src/renderer.ts`, and follows the reference rasterizer from
@@ -131,7 +167,8 @@ finished and later splats skip it.
 - **Tiles and the GPU.** The reference renderer bins splats into 16x16 pixel
   tiles and runs on the GPU to handle millions of them. This one visits splats
   one by one, so it is limited to a few thousand at a small resolution.
-- **Training.** Nothing is learned from photographs.
+- **3D training.** The trainer fits gaussians to one picture in 2D. Learning
+  a 3D scene from many photographs is not implemented.
 - **Other file formats.** Only `.splat` is read, not the trainer's own `.ply`
   or compressed formats such as `.spz`.
 
