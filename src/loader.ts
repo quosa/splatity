@@ -58,22 +58,48 @@ export function parseSplat(data: ArrayBuffer): SplatBuffer {
 }
 
 /**
- * Where to point the camera: the middle of the scene and roughly how big it
- * is. Ignores the outermost 5% on each side, because captures have stray
- * "floater" splats far away from everything else.
+ * Where to point the camera: the middle of the scene and roughly how big its
+ * main subject is.
+ *
+ * The bounding box is useless for this. A capture of something outdoors also
+ * contains the far background and sky, spread over an area many times larger
+ * than the subject, plus stray "floater" splats. But the trainer spends most
+ * splats where the photos show detail, so the subject is where splats are
+ * dense: the median position is its middle, and the distance within which
+ * three quarters of all splats lie is a good measure of its size.
+ *
+ * `surrounded` says whether there is such a far background at all. If so, the
+ * photos were taken from in amongst the scene, and it only looks right from
+ * roughly where the photographer stood: further out, the camera ends up behind
+ * blobs that no photo ever constrained.
  */
-export function frameScene(splats: SplatBuffer): { centre: Vec3; radius: number } {
+export function frameScene(splats: SplatBuffer): {
+  centre: Vec3;
+  radius: number;
+  surrounded: boolean;
+} {
   const step = Math.max(1, Math.floor(splats.count / 20000)); // a sample is plenty
+  const { positions } = splats;
+  const quantile = (values: number[], fraction: number): number => {
+    values.sort((p, q) => p - q);
+    return values[Math.floor((values.length - 1) * fraction)];
+  };
+
   const centre: Vec3 = [0, 0, 0];
-  let radius = 0;
   for (let axis = 0; axis < 3; axis++) {
     const values: number[] = [];
-    for (let i = 0; i < splats.count; i += step) values.push(splats.positions[i * 3 + axis]);
-    values.sort((p, q) => p - q);
-    const low = values[Math.floor((values.length - 1) * 0.05)];
-    const high = values[Math.floor((values.length - 1) * 0.95)];
-    centre[axis] = (low + high) / 2;
-    radius = Math.max(radius, (high - low) / 2);
+    for (let i = 0; i < splats.count; i += step) values.push(positions[i * 3 + axis]);
+    centre[axis] = quantile(values, 0.5);
   }
-  return { centre, radius };
+
+  const distances: number[] = [];
+  for (let i = 0; i < splats.count; i += step) {
+    distances.push(Math.hypot(
+      positions[i * 3] - centre[0],
+      positions[i * 3 + 1] - centre[1],
+      positions[i * 3 + 2] - centre[2],
+    ));
+  }
+  const radius = quantile(distances, 0.75);
+  return { centre, radius, surrounded: quantile(distances, 0.95) > 3 * radius };
 }

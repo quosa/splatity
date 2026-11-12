@@ -79,6 +79,13 @@ takes a few hundred milliseconds. Two things keep it usable:
 - **Counting sort.** Depth sorting uses 65,536 depth buckets instead of a
   comparison sort.
 
+The same repository has `train.splat`, a locomotive outdoors with about a
+million gaussians, which takes around a second per full frame. A scene like
+that only looks right from roughly where the photos were taken: orbit too far
+out and the camera ends up behind smeared "floater" blobs that no photo ever
+constrained. The viewer therefore starts close in when a scene has a far
+background, and further back for a lone object.
+
 Captures are rarely level, because nothing in the photos says which way is up.
 Shift-drag (or twist with two fingers) to tilt the turntable axis until the
 scene sits straight.

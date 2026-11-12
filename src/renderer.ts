@@ -161,6 +161,8 @@ export class Renderer {
     const [fx, fy, fz] = camera.forward;
     // Focal length in pixels: how many pixels one unit spans at depth 1.
     const focal = height / 2 / Math.tan(camera.fovY / 2);
+    const limitY = 1.3 * Math.tan(camera.fovY / 2);
+    const limitX = (limitY * width) / height;
 
     // ---- 1. PROJECT -------------------------------------------------------
     let visible = 0;
@@ -186,9 +188,16 @@ export class Renderer {
       // Jacobian J at the splat centre. Combined with the camera rotation W
       // (rows: right, up, forward) this gives a 2x3 matrix T = J · W whose two
       // rows say how a small world-space step moves the point on screen.
+      //
+      // That approximation breaks down for splats far outside the view, where
+      // it would smear them into long streaks across the screen. So, like the
+      // reference renderer, we evaluate J no further out than 1.3x the edge of
+      // the view.
+      const jx = Math.max(-limitX, Math.min(limitX, x / z));
+      const jy = Math.max(-limitY, Math.min(limitY, y / z));
       const k = focal / z;
-      const kx = (focal * x) / (z * z);
-      const ky = (focal * y) / (z * z);
+      const kx = (focal * jx) / z;
+      const ky = (focal * jy) / z;
       const t0x = k * rx - kx * fx, t0y = k * ry - kx * fy, t0z = k * rz - kx * fz;
       const t1x = ky * fx - k * ux, t1y = ky * fy - k * uy, t1z = ky * fz - k * uz;
 
