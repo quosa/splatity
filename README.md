@@ -24,8 +24,12 @@ npm run dev
 
 Drag to orbit, scroll or pinch to zoom, and use the *Splat size* slider to
 shrink the splats. *Open a .splat file* (or drag and drop one) loads a captured
-scene. `npm test` runs the unit tests and `npm run build` makes a
-static site in `dist/`.
+scene.
+
+`npm run check` runs everything CI does: typecheck, lint, unit tests and a
+production build. `npm run build` makes a static site in `dist/`, which is
+published to GitHub Pages at <https://quosa.github.io/splatity/> on every push
+to `main`.
 
 ## What a splat scene is
 
