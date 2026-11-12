@@ -23,8 +23,8 @@ npm run dev
 ```
 
 Drag to orbit, scroll or pinch to zoom, and use the *Splat size* slider to
-shrink the splats. *Open a .splat file* (or drag and drop one) loads a captured
-scene.
+shrink the splats. *Open a .splat or .ply file* (or drag and drop one) loads a
+captured scene.
 
 `npm run check` runs everything CI does: typecheck, lint, unit tests and a
 production build. `npm run build` makes a static site in `dist/`, which is
@@ -62,6 +62,15 @@ the same five properties as the table above.
 | 12-23 | scale, 3 x float32                                    |
 | 24-27 | red, green, blue, opacity, 4 x uint8                  |
 | 28-31 | rotation quaternion (w, x, y, z), 4 x uint8 for -1..1 |
+
+It also reads `.ply`, the trainer's own output and what capture apps such as
+Scaniverse export. A PLY file is a text header listing the columns, followed by
+one binary row per gaussian. The values are stored the way the optimiser works
+on them (see the trainer below): sizes as logarithms, opacity before it is
+squashed into 0..1, and colour as spherical-harmonics coefficients, of which
+only the base colour is used here. A `.splat` file is a `.ply` with all of that
+decoded and the rows sorted most important first; the loader does the same on
+the fly.
 
 Two object scans of about 280,000 gaussians each that work well are
 `plush.splat` and `nike.splat` from
@@ -169,8 +178,8 @@ finished and later splats skip it.
   one by one, so it is limited to a few thousand at a small resolution.
 - **3D training.** The trainer fits gaussians to one picture in 2D. Learning
   a 3D scene from many photographs is not implemented.
-- **Other file formats.** Only `.splat` is read, not the trainer's own `.ply`
-  or compressed formats such as `.spz`.
+- **Other file formats.** `.splat` and binary `.ply` are read, but not
+  compressed formats such as `.spz`.
 
 ## Conventions
 

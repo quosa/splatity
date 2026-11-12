@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { directionFromAngles, orbitCamera, roll, turn, type Orbit } from '../src/camera';
-import { frameScene, parseSplat } from '../src/loader';
+import { frameScene, parsePly, parseScene, parseSplat } from '../src/loader';
 import { quatBetween, quatFromAxisAngle, quatToMat3, rotate } from '../src/math';
 import { buildSplatBuffer, Renderer } from '../src/renderer';
 import type { Splat } from '../src/scene';
@@ -179,6 +179,67 @@ describe('.splat loader', () => {
 
   it('rejects files that are too small', () => {
     expect(() => parseSplat(new ArrayBuffer(10))).toThrow();
+  });
+});
+
+describe('.ply loader', () => {
+  const COLUMNS = [
+    'x', 'y', 'z', 'nx', 'ny', 'nz', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'f_rest_0',
+    'opacity', 'scale_0', 'scale_1', 'scale_2', 'rot_0', 'rot_1', 'rot_2', 'rot_3',
+  ];
+  type Row = Partial<Record<(typeof COLUMNS)[number], number>>;
+
+  /** A gaussian splat PLY with one uchar column in front, to test offsets. */
+  function ply(rows: Row[], format = 'binary_little_endian 1.0'): ArrayBuffer {
+    const header =
+      `ply\nformat ${format}\ncomment made by a test\nelement vertex ${rows.length}\n` +
+      'property uchar flag\n' +
+      COLUMNS.map((name) => `property float ${name}\n`).join('') +
+      'element face 0\nproperty list uchar int vertex_indices\nend_header\n';
+    const rowSize = 1 + COLUMNS.length * 4;
+    const bytes = new Uint8Array(header.length + rows.length * rowSize);
+    bytes.set(new TextEncoder().encode(header));
+    const view = new DataView(bytes.buffer, header.length);
+    rows.forEach((row, r) => {
+      COLUMNS.forEach((name, c) => view.setFloat32(r * rowSize + 1 + c * 4, row[name] ?? 0, true));
+    });
+    return bytes.buffer;
+  }
+
+  const small: Row = { x: 1, y: 2, z: 3, scale_0: Math.log(0.5), scale_1: Math.log(0.1), scale_2: Math.log(0.1), rot_0: 2 };
+  const big: Row = { x: -1, scale_0: 1, scale_1: 1, scale_2: 1, rot_0: 1, opacity: 2, f_dc_0: 1, f_dc_1: -10, f_dc_2: 0 };
+
+  it('decodes log sizes, squashed opacity and colour coefficients', () => {
+    const s = parsePly(ply([small]));
+    expect(s.count).toBe(1);
+    expect([...s.positions]).toEqual([1, -2, -3]);
+    expect(s.covariances[0]).toBeCloseTo(0.25); // exp(log 0.5)², quaternion normalised
+    expect(s.covariances[3]).toBeCloseTo(0.01);
+    expect(s.opacities[0]).toBeCloseTo(0.5); // sigmoid(0)
+    expect(s.colors[0]).toBeCloseTo(0.5); // a coefficient of 0 is mid grey
+  });
+
+  it('puts the biggest, most opaque gaussians first', () => {
+    const s = parsePly(ply([small, big, small]));
+    expect(s.positions[0]).toBe(-1);
+    expect(s.opacities[0]).toBeCloseTo(1 / (1 + Math.exp(-2)));
+    expect(s.colors[0]).toBeCloseTo(0.5 + 0.28209479177387814);
+    expect(s.colors[1]).toBe(0); // clamped
+    expect(s.positions[3]).toBe(1);
+  });
+
+  it('is picked automatically by its first bytes', () => {
+    expect(parseScene(ply([small, big])).count).toBe(2);
+    expect(parseScene(new ArrayBuffer(64)).count).toBe(2); // two .splat records
+  });
+
+  it('rejects files it cannot read', () => {
+    expect(() => parsePly(new ArrayBuffer(64))).toThrow('Not a PLY');
+    expect(() => parsePly(ply([small], 'ascii 1.0'))).toThrow('binary');
+    expect(() => parsePly(ply([small, small]).slice(0, -10))).toThrow('shorter');
+    const mesh = new TextEncoder().encode(
+      'ply\nformat binary_little_endian 1.0\nelement vertex 1\nproperty float x\nend_header\n\0\0\0\0');
+    expect(() => parsePly(mesh.buffer)).toThrow('no "y" property');
   });
 });
 
