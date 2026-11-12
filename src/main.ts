@@ -1,5 +1,5 @@
 import { directionFromAngles, orbitCamera, roll, turn, type Orbit } from './camera';
-import { frameScene, parseSplat } from './loader';
+import { frameScene, parseScene } from './loader';
 import { buildSplatBuffer, Renderer, type SplatBuffer } from './renderer';
 import { createScene } from './scene';
 
@@ -118,12 +118,12 @@ function frame(now: number): void {
   requestAnimationFrame(frame);
 }
 
-// ---- Loading .splat files ---------------------------------------------------
+// ---- Loading .splat and .ply files ---------------------------------------------------
 
 async function load(file: File): Promise<void> {
   stats.textContent = `Loading ${file.name}…`;
   try {
-    splats = parseSplat(await file.arrayBuffer());
+    splats = parseScene(await file.arrayBuffer());
   } catch (error) {
     stats.textContent = `Could not load ${file.name}: ${(error as Error).message}`;
     return;
