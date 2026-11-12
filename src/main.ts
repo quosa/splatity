@@ -128,11 +128,12 @@ async function load(file: File): Promise<void> {
     stats.textContent = `Could not load ${file.name}: ${(error as Error).message}`;
     return;
   }
-  const { centre, radius } = frameScene(splats);
+  const { centre, radius, surrounded } = frameScene(splats);
   orbit.target = centre;
   orbit.up = [0, 1, 0];
   orbit.direction = directionFromAngles(0.6, 0.2);
-  orbit.distance = Math.max(radius, 0.01) * 3;
+  // Stand back from a lone object; stay close in a scene with surroundings.
+  orbit.distance = Math.max(radius, 0.01) * (surrounded ? 1.5 : 3);
   autoRotate = false;
   previewBudget = Math.min(previewBudget, 20000);
   hint.textContent =

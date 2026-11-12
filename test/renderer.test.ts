@@ -162,13 +162,19 @@ describe('.splat loader', () => {
     expect(s.covariances[3]).toBeCloseTo(0.25, 2);
   });
 
-  it('frames the bulk of a scene, ignoring stray floaters', () => {
-    const line = Array.from({ length: 101 }, (_, i) => splat({ position: [i * 0.1, 2, 0] }));
-    line.push(splat({ position: [5000, 2, 0] }));
-    const { centre, radius } = frameScene(buildSplatBuffer(line));
-    expect(centre[0]).toBeCloseTo(5, 0);
-    expect(centre[1]).toBeCloseTo(2);
-    expect(radius).toBeCloseTo(4.5, 0);
+  it('frames the dense subject, not the far background', () => {
+    // A subject of 300 splats within 1 unit of (5, 2, 0) ...
+    const scene = Array.from({ length: 300 }, (_, i) =>
+      splat({ position: [5 + Math.cos(i) * (i / 300), 2 + Math.sin(i) * (i / 300), 0] }));
+    // ... and 60 background splats up to 600 units away.
+    for (let i = 1; i <= 60; i++) scene.push(splat({ position: [i * 10, -i * 5, i * 7] }));
+    const subject = frameScene(buildSplatBuffer(scene.slice(0, 300)));
+    expect(subject.surrounded).toBe(false);
+    const { centre, radius, surrounded } = frameScene(buildSplatBuffer(scene));
+    expect(surrounded).toBe(true);
+    expect(Math.hypot(centre[0] - 5, centre[1] - 2, centre[2])).toBeLessThan(0.5);
+    expect(radius).toBeGreaterThan(0.5);
+    expect(radius).toBeLessThan(1.5);
   });
 
   it('rejects files that are too small', () => {
@@ -177,6 +183,14 @@ describe('.splat loader', () => {
 });
 
 describe('renderer options', () => {
+  it('does not smear a splat that is far outside the view across the screen', () => {
+    // Close to the camera and far off to the side: without clamping the
+    // Jacobian this projects to a streak thousands of pixels long.
+    const { pixel } = draw([splat({ position: [30, 0, 4], scale: [0.2, 0.2, 0.2] })]);
+    expect(pixel(CENTRE, CENTRE)[0]).toBe(0);
+    expect(pixel(SIZE - 1, CENTRE)[0]).toBe(0);
+  });
+
   it('draws only the first maxSplats, and sorts many splats by depth', () => {
     const many = Array.from({ length: 200 }, (_, i) =>
       splat({ position: [0, 0, -4 + i * 0.03], color: [i === 199 ? 1 : 0, 0, 0], opacity: 0.9 }));
